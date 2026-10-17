@@ -140,6 +140,14 @@ def parse_matchup(html, lid):
     if len(ids) == 2:
         rows[ids[0]]["opp"], rows[ids[1]]["opp"] = ids[1], ids[0]
 
+    # games played this week ("Games Played 12/34 ... 15/35") — the cup tiebreaker (fewer games wins).
+    # Left figure = first team in the stats table, right figure = second team.
+    box = soup.find(id="remaining-games")
+    if box:
+        counts = re.findall(r"(\d+)\s*/\s*(\d+)", box.get_text(" ", strip=True))
+        for tid, (played, total) in zip(ids, counts):
+            rows[tid]["gp"], rows[tid]["gp_max"] = int(played), int(total)
+
     dates = sorted(set(re.findall(r"matchup\?week=\d+&(?:amp;)?date=(\d{4}-\d{2}-\d{2})", html)))
     return rows, (dates[0] if dates else None), (dates[-1] if dates else None)
 
