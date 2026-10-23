@@ -48,6 +48,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # build on the newest main (another run may have pushed meanwhile); only the two data files change
+          git fetch -q origin main
+          git reset -q origin/main
           git add cup-data.json drafts-data.json
           if git diff --cached --quiet; then
             echo "No changes"
