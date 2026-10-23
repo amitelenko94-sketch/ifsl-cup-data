@@ -21,6 +21,7 @@ from bs4 import BeautifulSoup
 
 BASE = "https://basketball.fantasysports.yahoo.com/nba/"
 OUT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cup-data.json")
+DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug")  # pages we couldn't read (uploaded as a run artifact)
 
 # (yahoo league id, tier, name) — tier 1 = ליגת העל ... 5 = ליגה חמישית
 LEAGUES = [
@@ -32,7 +33,7 @@ LEAGUES = [
     (3227, 5, "Allen"), (3233, 5, "Ginobili"), (3230, 5, "Gasol"), (31531, 5, "Stoudemire"),
 ]
 
-# matchup-table header -> key in the output
+# matchup-table header (whitespace removed) -> key in the output
 COLUMNS = {
     "FGM/A*": "fgma", "FG%": "fg_pct", "FTM/A*": "ftma", "FT%": "ft_pct",
     "3PTM": "threes", "PTS": "pts", "REB": "reb", "AST": "ast",
@@ -95,19 +96,35 @@ def parse_league_home(html, lid):
     return teams, current
 
 
+def head_text(th):
+    # "FGM/A *" and "FGM/A*" are the same column — Yahoo's markup around the header varies
+    return re.sub(r"\s+", "", th.get_text(""))
+
+
+class NoStatsTable(RuntimeError):
+    pass
+
+
+def describe_page(soup, html):
+    """One-line summary of a page we couldn't read, for the run log."""
+    title = soup.title.get_text(strip=True) if soup.title else None
+    tables = [[head_text(th) for th in t.find_all("th")][:8] for t in soup.find_all("table")]
+    return f"title={title!r} size={len(html)} tables={tables[:5]}"
+
+
 def parse_matchup(html, lid):
     """Both teams' weekly totals from one matchup page, plus the week's dates."""
     soup = BeautifulSoup(html, "lxml")
     table = None
     for t in soup.find_all("table"):
-        heads = [th.get_text(" ", strip=True) for th in t.find_all("th")]
+        heads = [head_text(th) for th in t.find_all("th")]
         if "FGM/A*" in heads and "PTS" in heads:
             table = t
             break
     if table is None:
-        raise RuntimeError("stats table not found")
+        raise NoStatsTable("stats table not found — " + describe_page(soup, html))
 
-    heads = [th.get_text(" ", strip=True) for th in table.find("tr").find_all("th")]
+    heads = [head_text(th) for th in table.find("tr").find_all("th")]
     rows = {}
     for tr in table.find_all("tr")[1:]:
         tds = tr.find_all("td")
@@ -152,17 +169,60 @@ def parse_matchup(html, lid):
     return rows, (dates[0] if dates else None), (dates[-1] if dates else None)
 
 
-def scrape_week(lid, week, team_ids):
-    """Weekly totals for every team in the league for one week (one page per matchup)."""
-    out, start, end = {}, None, None
+debug_saved = 0
+
+
+def save_debug(name, html):
+    global debug_saved
+    if debug_saved >= 3:
+        return
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+    with open(os.path.join(DEBUG_DIR, name), "w", encoding="utf-8") as f:
+        f.write(html)
+    debug_saved += 1
+
+
+def read_matchup(lid, week, tid):
+    """One matchup page. Yahoo sometimes serves a page without the stats table while games
+    are live — wait and try again before giving up."""
+    url = f"{BASE}{lid}/matchup?week={week}&mid1={tid}"
+    for attempt in range(3):
+        html = fetch(url)
+        try:
+            return parse_matchup(html, lid)
+        except NoStatsTable:
+            if attempt == 2:
+                save_debug(f"{lid}-week{week}-team{tid}.html", html)
+                raise
+            time.sleep(5 * (attempt + 1))
+
+
+def scrape_week(lid, week, team_ids, prev_week):
+    """Weekly totals for every team in the league for one week (one page per matchup).
+    A matchup that can't be read keeps its numbers from the previous run instead of
+    failing the whole league; those teams are listed under "stale"."""
+    prev_week = prev_week or {}
+    out, start, end, stale = {}, prev_week.get("start"), prev_week.get("end"), []
     for tid in sorted(team_ids, key=int):
-        if tid in out:
+        if tid in out or tid in stale:
             continue  # already covered by its opponent's matchup page
-        html = fetch(f"{BASE}{lid}/matchup?week={week}&mid1={tid}")
-        rows, s, e = parse_matchup(html, lid)
+        try:
+            rows, s, e = read_matchup(lid, week, tid)
+        except NoStatsTable as err:
+            print(f"     week {week} team {tid}: {err}", file=sys.stderr)
+            old = prev_week.get("teams", {})
+            for t in (tid, (old.get(tid) or {}).get("opp")):
+                if t and t in old:
+                    out[t] = old[t]
+                if t:
+                    stale.append(t)
+            continue
         out.update(rows)
-        start, end = start or s, end or e
-    return {"start": start, "end": end, "teams": out}
+        start, end = s or start, e or end
+    week_data = {"start": start, "end": end, "teams": out}
+    if stale:
+        week_data["stale"] = stale
+    return week_data
 
 
 def main():
@@ -192,14 +252,17 @@ def main():
             # always refresh this week and last week (stat corrections); fill in any missing older weeks
             todo = [w for w in range(1, current + 1)
                     if w >= current - 1 or str(w) not in weeks]
+            stale = 0
             for w in todo:
-                weeks[str(w)] = scrape_week(lid, w, teams.keys())
+                weeks[str(w)] = scrape_week(lid, w, teams.keys(), weeks.get(str(w)))
+                stale += len(weeks[str(w)].get("stale", []))
             data["leagues"][key] = {
                 "name": name, "tier": tier, "current_week": current,
                 "teams": teams, "weeks": weeks,
             }
             ok += 1
-            print(f"OK   {name:<11} teams={len(teams):<2} week={current} weeks_scraped={todo}")
+            note = f"  ({stale} teams kept from the previous run — Yahoo page unreadable)" if stale else ""
+            print(f"OK   {name:<11} teams={len(teams):<2} week={current} weeks_scraped={todo}{note}")
         except Exception as e:  # keep the league's previous data if this run fails
             failed.append(name)
             if prev:
