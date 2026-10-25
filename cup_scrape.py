@@ -42,12 +42,25 @@ COLUMNS = {
 
 DELAY = 0.4  # seconds between requests — be gentle with Yahoo
 
+# real games played (the cup tiebreaker): Yahoo's own "Games Played" also counts players who sat
+# in an active slot while injured (0 minutes). We count from the daily lineup pages instead.
+ACTIVE_SLOTS = {"PG", "SG", "G", "SF", "PF", "F", "C", "Util", "UTIL"}
+DAY_PAGE_BUDGET = 250      # max daily-lineup pages per run (a full day = 228 pages; the rest waits for the next run)
+DAY_PAGE_DELAY = 0.8       # extra pause between daily-lineup pages — too many fast requests get "HTTP 999" from Yahoo
+DAY_FINAL_HOUR_UTC = 10    # a US game day is final the next day at 10:00 UTC (13:00 Israel)
+SLASH = re.compile(r"^(\d+)/(\d+)$")
+PLAYER_LINK = re.compile(r"/nba/players/\d+")
+
 session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/126.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
 })
+
+
+class RateLimited(RuntimeError):
+    pass
 
 
 def fetch(url):
@@ -59,6 +72,8 @@ def fetch(url):
             r = session.get(url, timeout=30)
             if r.status_code == 200:
                 return r.text
+            if r.status_code == 999:  # Yahoo's "slow down" — don't keep knocking
+                raise RateLimited(f"{url}: HTTP 999 (Yahoo rate limit)")
             last = f"HTTP {r.status_code}"
         except requests.RequestException as e:
             last = str(e)
@@ -225,6 +240,126 @@ def scrape_week(lid, week, team_ids, prev_week):
     return week_data
 
 
+def played(cells):
+    """Did this lineup row really play that day? (same rule as the BlockBuster board)
+    Minutes > 0, or any non-zero stat. Injured-but-in-the-lineup shows MIN 0 and 0/0 → not counted;
+    no game / DNP shows "-/-" → not counted. Anchor = the FGM/A cell; MIN sits right before it."""
+    j = None
+    for i, c in enumerate(cells):
+        s = (c or "").strip()
+        if SLASH.match(s) or s == "-/-":
+            j = i
+            break
+    if j is None:
+        return False
+    if j >= 1:
+        try:
+            if float((cells[j - 1] or "").strip()) > 0:
+                return True
+        except ValueError:
+            pass
+    for s in cells[j:]:
+        s = (s or "").strip()
+        m = SLASH.match(s)
+        if m:
+            if int(m.group(1)) > 0 or int(m.group(2)) > 0:
+                return True
+        elif s.isdigit() and int(s) > 0:
+            return True
+    return False
+
+
+def games_on_day(lid, tid, week, date):
+    """How many players of one team really played on one day (active slots only)."""
+    soup = BeautifulSoup(fetch(f"{BASE}{lid}/{tid}/team?date={date}&week={week}"), "lxml")
+    # the lineup = the table with the most player rows
+    best, best_rows = None, 0
+    for t in soup.find_all("table"):
+        rows = [tr for tr in t.find_all("tr") if tr.find("a", href=PLAYER_LINK)]
+        if len(rows) > best_rows:
+            best, best_rows = rows, len(rows)
+    if not best:
+        raise RuntimeError("lineup table not found")
+    n = 0
+    for tr in best:
+        cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
+        if cells and cells[0].strip() in ACTIVE_SLOTS and played(cells):
+            n += 1
+    return n
+
+
+def week_days(start, end):
+    d, last = datetime.date.fromisoformat(start), datetime.date.fromisoformat(end)
+    while d <= last:
+        yield d.isoformat()
+        d += datetime.timedelta(days=1)
+
+
+def day_is_final(date, now):
+    nxt = datetime.date.fromisoformat(date) + datetime.timedelta(days=1)
+    return now >= datetime.datetime(nxt.year, nxt.month, nxt.day, DAY_FINAL_HOUR_UTC, tzinfo=datetime.timezone.utc)
+
+
+def update_real_games(data):
+    """Fill league["daily"][date][team] = players who really played, for finished days of this week
+    and last week (each day is read once), then sum them into each week's teams as gp_real."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    budget, read, failed = DAY_PAGE_BUDGET, 0, 0
+    for lid, _, name in LEAGUES:
+        L = data["leagues"].get(str(lid))
+        if not L or not L.get("current_week"):
+            continue
+        daily = L.setdefault("daily", {})
+        cw = L["current_week"]
+        for w in (cw - 1, cw):
+            wk = L["weeks"].get(str(w)) or {}
+            if not wk.get("start") or not wk.get("end"):
+                continue
+            for date in week_days(wk["start"], wk["end"]):
+                if not day_is_final(date, now):
+                    continue
+                got = daily.setdefault(date, {})
+                for tid in sorted(L["teams"], key=int):
+                    if tid in got or budget <= 0:
+                        continue
+                    budget -= 1
+                    try:
+                        time.sleep(DAY_PAGE_DELAY)
+                        got[tid] = games_on_day(lid, tid, w, date)
+                        read += 1
+                    except RateLimited as e:  # Yahoo asked us to slow down: stop this step, continue next run
+                        print(f"     games: {e} — stopping, will continue next run", file=sys.stderr)
+                        budget = 0
+                    except Exception as e:  # try again next run
+                        failed += 1
+                        print(f"     games {name} team {tid} {date}: {e}", file=sys.stderr)
+
+        # sum the days into every stored week; drop daily detail older than last week
+        keep_from = (L["weeks"].get(str(cw - 1)) or L["weeks"].get(str(cw)) or {}).get("start")
+        for wk in L["weeks"].values():
+            if not wk.get("start") or not wk.get("end"):
+                continue
+            days = list(week_days(wk["start"], wk["end"]))
+            complete = [d for d in days if d in daily and all(t in daily[d] for t in wk["teams"])]
+            through = None
+            for d in days:  # last day of the unbroken run of complete days from the start of the week
+                if d not in complete:
+                    break
+                through = d
+            if not complete and "gp_real_through" in wk:
+                continue  # an older week whose daily detail was already dropped — keep its totals
+            for tid, t in wk["teams"].items():
+                if through:
+                    t["gp_real"] = sum(daily[d][tid] for d in days if d <= through)
+                else:
+                    t.pop("gp_real", None)  # nothing counted yet — the site falls back to Yahoo's counter
+            wk["gp_real_through"] = through
+        if keep_from:
+            for d in [d for d in daily if d < keep_from]:
+                del daily[d]
+    print(f"Real games: {read} day-pages read, {failed} failed" + (", budget used up (continues next run)" if budget <= 0 else ""))
+
+
 def main():
     data = {"leagues": {}}
     if os.path.exists(OUT_FILE):
@@ -259,6 +394,7 @@ def main():
             data["leagues"][key] = {
                 "name": name, "tier": tier, "current_week": current,
                 "teams": teams, "weeks": weeks,
+                "daily": prev.get("daily", {}),   # real-games count per day, read once per day (see update_real_games)
             }
             ok += 1
             note = f"  ({stale} teams kept from the previous run — Yahoo page unreadable)" if stale else ""
@@ -269,6 +405,11 @@ def main():
                 prev["error"] = str(e)[:200]
                 data["leagues"][key] = prev
             print(f"FAIL {name:<11} {e}", file=sys.stderr)
+
+    try:
+        update_real_games(data)
+    except Exception as e:  # never lose the weekly stats because of the games count
+        print(f"Real games step failed: {e}", file=sys.stderr)
 
     data["updated"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     with open(OUT_FILE, "w", encoding="utf-8") as f:

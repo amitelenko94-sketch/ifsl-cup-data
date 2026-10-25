@@ -15,7 +15,7 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40         # the daily-lineup reading (real games count) can take ~15 min when catching up
     steps:
       - uses: actions/checkout@v5
 
