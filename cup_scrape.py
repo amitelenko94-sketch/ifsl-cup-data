@@ -23,9 +23,10 @@ BASE = "https://basketball.fantasysports.yahoo.com/nba/"
 OUT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cup-data.json")
 DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug")  # pages we couldn't read (uploaded as a run artifact)
 
-# (yahoo league id, tier, name) — tier 1 = ליגת העל ... 5 = ליגה חמישית
+# (yahoo league id, tier, name) — tier 1 = ליגת העל ... 5 = ליגה חמישית, "commish" = the Commissioners
+# league (collected for the stats page; it is NOT part of the cup — cup.html has its own list)
 LEAGUES = [
-    (3109, 1, "Jordan"),
+    (3109, 1, "Jordan"), (234, "commish", "Commish League"),
     (3130, 2, "Magic"), (3133, 2, "Bird"),
     (3137, 3, "Kobe"), (3140, 3, "Shaq"), (3149, 3, "Duncan"), (3156, 3, "Garnett"),
     (3159, 4, "Nash"), (3170, 4, "Kidd"), (3171, 4, "Nowitzki"), (3178, 4, "T-Mac"),
@@ -270,7 +271,9 @@ def played(cells):
 
 
 def games_on_day(lid, tid, week, date):
-    """How many players of one team really played on one day (active slots only)."""
+    """[really played, counted the Yahoo way] for one team on one day (active slots only).
+    The Yahoo-way count (any game box line, even 0 minutes) lets the site add the games played
+    after the last counted day: Yahoo's weekly counter minus these."""
     soup = BeautifulSoup(fetch(f"{BASE}{lid}/{tid}/team?date={date}&week={week}"), "lxml")
     # the lineup = the table with the most player rows
     best, best_rows = None, 0
@@ -280,12 +283,16 @@ def games_on_day(lid, tid, week, date):
             best, best_rows = rows, len(rows)
     if not best:
         raise RuntimeError("lineup table not found")
-    n = 0
+    real = yahoo_way = 0
     for tr in best:
         cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
-        if cells and cells[0].strip() in ACTIVE_SLOTS and played(cells):
-            n += 1
-    return n
+        if not cells or cells[0].strip() not in ACTIVE_SLOTS:
+            continue
+        if any(SLASH.match(c.strip()) for c in cells):
+            yahoo_way += 1
+        if played(cells):
+            real += 1
+    return [real, yahoo_way]
 
 
 def week_days(start, end):
@@ -349,10 +356,17 @@ def update_real_games(data):
             if not complete and "gp_real_through" in wk:
                 continue  # an older week whose daily detail was already dropped — keep its totals
             for tid, t in wk["teams"].items():
+                counted = [daily[d][tid] for d in days if through and d <= through]
                 if through:
-                    t["gp_real"] = sum(daily[d][tid] for d in days if d <= through)
+                    # a day is [really played, Yahoo-way]; days saved before 2026-10-27 are a plain number
+                    t["gp_real"] = sum(v[0] if isinstance(v, list) else v for v in counted)
                 else:
                     t.pop("gp_real", None)  # nothing counted yet — the site falls back to Yahoo's counter
+                # games after the last counted day (today's), as Yahoo counts them — for per-game stats
+                if through and t.get("gp") is not None and all(isinstance(v, list) for v in counted):
+                    t["gp_after"] = max(0, t["gp"] - sum(v[1] for v in counted))
+                else:
+                    t.pop("gp_after", None)
             wk["gp_real_through"] = through
         if keep_from:
             for d in [d for d in daily if d < keep_from]:
