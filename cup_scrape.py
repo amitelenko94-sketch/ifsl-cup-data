@@ -48,7 +48,8 @@ DELAY = 0.4  # seconds between requests — be gentle with Yahoo
 ACTIVE_SLOTS = {"PG", "SG", "G", "SF", "PF", "F", "C", "Util", "UTIL"}
 DAY_PAGE_BUDGET = 250      # max daily-lineup pages per run (a full day = 228 pages; the rest waits for the next run)
 DAY_PAGE_DELAY = 0.8       # extra pause between daily-lineup pages — too many fast requests get "HTTP 999" from Yahoo
-DAY_FINAL_HOUR_UTC = 10    # a US game day is final the next day at 10:00 UTC (13:00 Israel)
+DAY_FINAL_HOUR_UTC = 6     # a US game day is final the next day at 06:00 UTC (08:00 Israel winter / 09:00 summer);
+                           # the 06:15 UTC run then reads the whole night, so the site is current by ~9 Israel time
 SLASH = re.compile(r"^(\d+)/(\d+)$")
 PLAYER_LINK = re.compile(r"/nba/players/\d+")
 
