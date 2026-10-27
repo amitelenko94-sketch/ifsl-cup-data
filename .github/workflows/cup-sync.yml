@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: "15 */2 * * *"   # every 2 hours (UTC)
   workflow_dispatch:          # "Run workflow" button in the Actions tab
+  push:                       # run right away when the scraper code changes (the bot's data commits don't trigger runs)
+    branches: [main]
+    paths: ["*.py", "requirements.txt", ".github/workflows/**"]
 
 permissions:
   contents: write             # lets the job commit cup-data.json back to the repo
