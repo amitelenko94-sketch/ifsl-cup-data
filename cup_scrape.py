@@ -198,17 +198,23 @@ def save_debug(name, html):
     debug_saved += 1
 
 
+live_mode = False  # set once Yahoo serves matchup pages without the stats table (NBA games live)
+
+
 def read_matchup(lid, week, tid):
     """One matchup page. Yahoo sometimes serves a page without the stats table while games
-    are live — wait and try again before giving up."""
+    are live — wait and try again before giving up (only until that's been seen once this run)."""
+    global live_mode
     url = f"{BASE}{lid}/matchup?week={week}&mid1={tid}"
-    for attempt in range(3):
+    tries = 1 if live_mode else 3
+    for attempt in range(tries):
         html = fetch(url)
         try:
             return parse_matchup(html, lid)
         except NoStatsTable:
-            if attempt == 2:
+            if attempt == tries - 1:
                 save_debug(f"{lid}-week{week}-team{tid}.html", html)
+                live_mode = True
                 raise
             time.sleep(5 * (attempt + 1))
 
@@ -225,14 +231,16 @@ def scrape_week(lid, week, team_ids, prev_week):
         try:
             rows, s, e = read_matchup(lid, week, tid)
         except NoStatsTable as err:
+            # the other matchups of this week will look the same — keep everyone's previous numbers
             print(f"     week {week} team {tid}: {err}", file=sys.stderr)
             old = prev_week.get("teams", {})
-            for t in (tid, (old.get(tid) or {}).get("opp")):
-                if t and t in old:
+            for t in sorted(team_ids, key=int):
+                if t in out:
+                    continue
+                if t in old:
                     out[t] = old[t]
-                if t:
-                    stale.append(t)
-            continue
+                stale.append(t)
+            break
         out.update(rows)
         start, end = s or start, e or end
     week_data = {"start": start, "end": end, "teams": out}
