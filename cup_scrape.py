@@ -129,6 +129,35 @@ def describe_page(soup, html):
     return f"title={title!r} size={len(html)} tables={tables[:5]}"
 
 
+def parse_standings(html, lid):
+    """League standings from the home page: {teamId: {rank, w, l, t, pct}} (one W/L/T per weekly matchup)."""
+    soup = BeautifulSoup(html, "lxml")
+    for table in soup.find_all("table"):
+        heads = [head_text(th) for th in table.find_all("th")]
+        if "W-L-T" not in heads or "Team" not in heads:
+            continue
+        col = {h: i for i, h in enumerate(heads)}
+        out = {}
+        for tr in table.find_all("tr")[1:]:
+            tds = tr.find_all("td")
+            link = tr.find("a", href=re.compile(rf"/nba/{lid}/\d+$"))
+            if not link or len(tds) <= max(col["W-L-T"], col.get("Pct", 0)):
+                continue
+            tid = re.search(rf"/nba/{lid}/(\d+)$", link["href"]).group(1)
+            m = re.match(r"(\d+)-(\d+)-(\d+)", tds[col["W-L-T"]].get_text(strip=True))
+            if not m:
+                continue
+            rec = {"w": int(m.group(1)), "l": int(m.group(2)), "t": int(m.group(3))}
+            rank = re.match(r"\d+", tds[col["Rank"]].get_text(strip=True)) if "Rank" in col else None
+            if rank:
+                rec["rank"] = int(rank.group(0))
+            if "Pct" in col:
+                rec["pct"] = num(tds[col["Pct"]].get_text(strip=True))
+            out[tid] = rec
+        return out
+    return {}
+
+
 def parse_matchup(html, lid):
     """Both teams' weekly totals from one matchup page, plus the week's dates."""
     soup = BeautifulSoup(html, "lxml")
@@ -394,14 +423,16 @@ def main():
         key = str(lid)
         prev = data["leagues"].get(key, {})
         try:
-            teams, current = parse_league_home(fetch(f"{BASE}{lid}"), lid)
+            home = fetch(f"{BASE}{lid}")
+            teams, current = parse_league_home(home, lid)
+            standings = parse_standings(home, lid) or prev.get("standings", {})   # W-L-T for the stats page
             if not teams:
                 raise RuntimeError("no teams found on the league page")
             if not current:
                 # league not full yet → Yahoo hasn't built its schedule; keep the team list for now
                 data["leagues"][key] = {
                     "name": name, "tier": tier, "current_week": None,
-                    "teams": teams, "weeks": prev.get("weeks", {}),
+                    "teams": teams, "weeks": prev.get("weeks", {}), "standings": standings,
                 }
                 ok += 1
                 print(f"WAIT {name:<11} teams={len(teams):<2} (no schedule yet — league not full?)")
@@ -416,7 +447,7 @@ def main():
                 stale += len(weeks[str(w)].get("stale", []))
             data["leagues"][key] = {
                 "name": name, "tier": tier, "current_week": current,
-                "teams": teams, "weeks": weeks,
+                "teams": teams, "weeks": weeks, "standings": standings,
                 "daily": prev.get("daily", {}),   # real-games count per day, read once per day (see update_real_games)
             }
             ok += 1
