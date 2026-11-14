@@ -38,6 +38,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: python drafts_scrape.py
 
+      - name: Collect the trades (stats page)
+        if: ${{ !cancelled() }}
+        run: python trades_scrape.py
+
       - name: Keep pages the cup scraper couldn't read (for debugging)
         if: ${{ !cancelled() && hashFiles('debug/*.html') != '' }}
         uses: actions/upload-artifact@v4
@@ -51,10 +55,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # build on the newest main (another run may have pushed meanwhile); only the two data files change
+          # build on the newest main (another run may have pushed meanwhile); only the data files change
           git fetch -q origin main
           git reset -q origin/main
-          git add cup-data.json drafts-data.json
+          git add cup-data.json drafts-data.json trades-data.json
           if git diff --cached --quiet; then
             echo "No changes"
             exit 0
