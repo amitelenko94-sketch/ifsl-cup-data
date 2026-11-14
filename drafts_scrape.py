@@ -86,10 +86,13 @@ def main():
         with open(OUT_FILE, encoding="utf-8") as f:
             data = json.load(f)
 
-    ok, failed = 0, []
+    ok, failed, kept = 0, [], 0
     for lid, tier, name in LEAGUES:
         key = str(lid)
         prev = data["leagues"].get(key, {})
+        if prev.get("picks") and not prev.get("error"):
+            kept += 1  # this league already drafted — a finished draft doesn't change, don't ask Yahoo again
+            continue
         try:
             picks = parse_draft(fetch(f"{BASE}{lid}/draftresults"))
             data["leagues"][key] = {"name": name, "tier": tier, "picks": picks}
@@ -105,8 +108,9 @@ def main():
     data["updated"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     with open(OUT_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
-    print(f"\nDone: {ok}/{len(LEAGUES)} leagues OK" + (f", failed: {', '.join(failed)}" if failed else ""))
-    sys.exit(0 if ok else 1)
+    print(f"\nDone: {kept} already drafted (kept), {ok} read" + (f", failed: {', '.join(failed)}" if failed else ""))
+    # never fail the whole workflow over the drafts: the previous data is kept and the next run tries again
+    sys.exit(0)
 
 
 if __name__ == "__main__":
