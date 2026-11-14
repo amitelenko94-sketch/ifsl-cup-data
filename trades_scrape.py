@@ -27,9 +27,9 @@ from bs4 import BeautifulSoup
 BASE = "https://basketball.fantasysports.yahoo.com/nba/"
 OUT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades-data.json")
 
-# (yahoo league id, tier, name) — same list as cup_scrape.py (tier "commish" = the Commissioners league)
+# (yahoo league id, tier, name) — same list as cup_scrape.py (the Commissioners league is not included)
 LEAGUES = [
-    (3109, 1, "Jordan"), (234, "commish", "Commish League"),
+    (3109, 1, "Jordan"),
     (3130, 2, "Magic"), (3133, 2, "Bird"),
     (3137, 3, "Kobe"), (3140, 3, "Shaq"), (3149, 3, "Duncan"), (3156, 3, "Garnett"),
     (3159, 4, "Nash"), (3170, 4, "Kidd"), (3171, 4, "Nowitzki"), (3178, 4, "T-Mac"),

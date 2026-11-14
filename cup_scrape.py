@@ -23,10 +23,10 @@ BASE = "https://basketball.fantasysports.yahoo.com/nba/"
 OUT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cup-data.json")
 DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug")  # pages we couldn't read (uploaded as a run artifact)
 
-# (yahoo league id, tier, name) — tier 1 = ליגת העל ... 5 = ליגה חמישית, "commish" = the Commissioners
-# league (collected for the stats page; it is NOT part of the cup — cup.html has its own list)
+# (yahoo league id, tier, name) — tier 1 = ליגת העל ... 5 = ליגה חמישית. The Commissioners league (234) is
+# NOT collected: it's not in the cup and the user excluded it from the stats page (2026-11-14).
 LEAGUES = [
-    (3109, 1, "Jordan"), (234, "commish", "Commish League"),
+    (3109, 1, "Jordan"),
     (3130, 2, "Magic"), (3133, 2, "Bird"),
     (3137, 3, "Kobe"), (3140, 3, "Shaq"), (3149, 3, "Duncan"), (3156, 3, "Garnett"),
     (3159, 4, "Nash"), (3170, 4, "Kidd"), (3171, 4, "Nowitzki"), (3178, 4, "T-Mac"),
