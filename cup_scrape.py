@@ -211,8 +211,59 @@ def parse_matchup(html, lid):
         for tid, (played, total) in zip(ids, counts):
             rows[tid]["gp"], rows[tid]["gp_max"] = int(played), int(total)
 
+    # current rosters of both teams (for the cup match window) — first team on the left, like the stats table
+    rosters = parse_rosters(soup)
+    for tid, roster in zip(ids, rosters):
+        rows[tid]["_roster"] = roster
+
     dates = sorted(set(re.findall(r"matchup\?week=\d+&(?:amp;)?date=(\d{4}-\d{2}-\d{2})", html)))
     return rows, (dates[0] if dates else None), (dates[-1] if dates else None)
+
+
+TEAM_POS = re.compile(r"^([A-Z]{2,4})\s*-\s*([A-Z,]+)$")
+
+
+def parse_rosters(soup):
+    """[left team roster, right team roster] from the matchup page's player table.
+    Each player: {"slot": "PG"/…/"BN"/"IL", "name", "nba", "pos", "st" (injury code, e.g. "O"), "stt" (its title)}.
+    Rows with slot "--" are players who left the roster during the week (traded/dropped) — skipped."""
+    table = None
+    for t in soup.find_all("table"):
+        heads = [head_text(th) for th in t.find_all("th")]
+        if "Player" in heads and "Pos" in heads:
+            table = t
+            break
+    if table is None:
+        return []
+    sides = [[], []]
+    for tr in table.find_all("tr"):
+        slot, side = None, 0
+        for td in tr.find_all("td"):
+            pos = td.find("span", class_="pos-label")
+            if pos:
+                slot = pos.get("data-pos") or pos.get_text(strip=True)
+            a = td.find("a", class_="name")
+            if a is None and "(Empty)" in td.get_text():
+                side += 1  # an empty slot still takes this side's player cell
+                continue
+            if a is None:
+                continue
+            if side < 2 and slot and slot != "--":
+                p = {"slot": slot, "name": a.get_text(strip=True)}
+                for s in td.stripped_strings:
+                    m = TEAM_POS.match(s)
+                    if m:
+                        p["nba"], p["pos"] = m.group(1), m.group(2)
+                        break
+                inj = td.find(class_="F-injury")
+                if inj and inj.get_text(strip=True):
+                    p["st"] = inj.get_text(strip=True)
+                    titled = inj.find(title=True)
+                    if titled:
+                        p["stt"] = titled["title"]
+                sides[side].append(p)
+            side += 1
+    return sides
 
 
 debug_saved = 0
@@ -273,9 +324,13 @@ def scrape_week(lid, week, team_ids, prev_week):
             break
         out.update(rows)
         start, end = s or start, e or end
+    # rosters travel separately (main keeps only the latest per league, not one copy per week)
+    rosters = {tid: rec.pop("_roster") for tid, rec in out.items() if "_roster" in rec}
     week_data = {"start": start, "end": end, "teams": out}
     if stale:
         week_data["stale"] = stale
+    if rosters:
+        week_data["rosters"] = rosters
     return week_data
 
 
@@ -442,12 +497,17 @@ def main():
             todo = [w for w in range(1, current + 1)
                     if w >= current - 1 or str(w) not in weeks]
             stale = 0
+            rosters = dict(prev.get("rosters", {}))
             for w in todo:
                 weeks[str(w)] = scrape_week(lid, w, teams.keys(), weeks.get(str(w)))
                 stale += len(weeks[str(w)].get("stale", []))
+                fresh = weeks[str(w)].pop("rosters", None)
+                if w == current and fresh:
+                    rosters.update(fresh)   # teams not re-read this run (e.g. during live games) keep their last roster
+            rosters = {tid: r for tid, r in rosters.items() if tid in teams}
             data["leagues"][key] = {
                 "name": name, "tier": tier, "current_week": current,
-                "teams": teams, "weeks": weeks, "standings": standings,
+                "teams": teams, "weeks": weeks, "standings": standings, "rosters": rosters,
                 "daily": prev.get("daily", {}),   # real-games count per day, read once per day (see update_real_games)
             }
             ok += 1
