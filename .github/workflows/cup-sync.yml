@@ -2,7 +2,9 @@ name: IFSL cup sync
 
 on:
   schedule:
-    - cron: "15 */2 * * *"   # every 2 hours (UTC)
+    # ask every 30 minutes: GitHub drops many scheduled runs (since 2026-11-16 only ~1 in 4–6 fired), so we ask
+    # often and the "fresh enough?" step below skips a run when the data was updated less than 75 minutes ago
+    - cron: "7,37 * * * *"
   workflow_dispatch:          # "Run workflow" button in the Actions tab
   push:                       # run right away when the scraper code changes (the bot's data commits don't trigger runs)
     branches: [main]
@@ -22,28 +24,51 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Scheduled runs only: skip when the data is still fresh (updated < 75 min ago). This is about the AGE of the
+      # data, never about the clock time — a late/delayed run always goes ahead once the data is old.
+      - name: Fresh enough?
+        id: gate
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import datetime, json, os
+          run = "true"
+          if os.environ.get("GITHUB_EVENT_NAME") == "schedule":
+              try:
+                  upd = json.load(open("cup-data.json"))["updated"]
+                  age = datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.strptime(upd, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+                  if age < datetime.timedelta(minutes=75):
+                      run = "false"
+                      print(f"data is {int(age.total_seconds() // 60)} min old — skipping this run", file=__import__("sys").stderr)
+              except Exception as e:
+                  print(f"could not read the data age ({e}) — running", file=__import__("sys").stderr)
+          print(f"run={run}")
+          EOF
+
       - uses: actions/setup-python@v6
+        if: ${{ steps.gate.outputs.run == 'true' }}
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Install dependencies
+        if: ${{ steps.gate.outputs.run == 'true' }}
         run: pip install -r requirements.txt
 
       - name: Scrape the 19 leagues (cup)
+        if: ${{ steps.gate.outputs.run == 'true' }}
         run: python cup_scrape.py
 
       # the steps below run even if the cup step failed, so one broken scraper doesn't stop the other
       - name: Scrape the draft results (drafts page)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
         run: python drafts_scrape.py
 
       - name: Collect the trades (stats page)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
         run: python trades_scrape.py
 
       - name: Keep pages the cup scraper couldn't read (for debugging)
-        if: ${{ !cancelled() && hashFiles('debug/*.html') != '' }}
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' && hashFiles('debug/*.html') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: unreadable-pages
@@ -51,7 +76,7 @@ jobs:
           retention-days: 7
 
       - name: Save the data files
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
