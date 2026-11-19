@@ -2,16 +2,17 @@ name: IFSL cup sync
 
 on:
   schedule:
-    # ask every 30 minutes: GitHub drops many scheduled runs (since 2026-11-16 only ~1 in 4–6 fired), so we ask
+    # ask every 30 minutes: GitHub drops many scheduled runs (since 2026-11-16 only a few a day fire), so we ask
     # often and the "fresh enough?" step below skips a run when the data was updated less than 75 minutes ago
     - cron: "7,37 * * * *"
-  workflow_dispatch:          # "Run workflow" button in the Actions tab
+  workflow_dispatch:          # "Run workflow" button in the Actions tab — also used by a run to start its follow-up
   push:                       # run right away when the scraper code changes (the bot's data commits don't trigger runs)
     branches: [main]
     paths: ["*.py", "requirements.txt", ".github/workflows/**"]
 
 permissions:
-  contents: write             # lets the job commit cup-data.json back to the repo
+  contents: write             # commit the data files back to the repo
+  actions: write              # start a follow-up run (see sync_loop.py)
 
 concurrency:
   group: cup-sync
@@ -20,7 +21,7 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 40         # the daily-lineup reading (real games count) can take ~15 min when catching up
+    timeout-minutes: 355        # a night run waits for the games to end (sync_loop.py hands over before this)
     steps:
       - uses: actions/checkout@v5
 
@@ -54,18 +55,10 @@ jobs:
         if: ${{ steps.gate.outputs.run == 'true' }}
         run: pip install -r requirements.txt
 
-      - name: Scrape the 19 leagues (cup)
+      # cup + drafts + trades, commit — and at night: wait until the games are over, then collect
+      - name: Collect the data
         if: ${{ steps.gate.outputs.run == 'true' }}
-        run: python cup_scrape.py
-
-      # the steps below run even if the cup step failed, so one broken scraper doesn't stop the other
-      - name: Scrape the draft results (drafts page)
-        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
-        run: python drafts_scrape.py
-
-      - name: Collect the trades (stats page)
-        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
-        run: python trades_scrape.py
+        run: python sync_loop.py
 
       - name: Keep pages the cup scraper couldn't read (for debugging)
         if: ${{ !cancelled() && steps.gate.outputs.run == 'true' && hashFiles('debug/*.html') != '' }}
@@ -75,18 +68,9 @@ jobs:
           path: debug/
           retention-days: 7
 
-      - name: Save the data files
-        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # build on the newest main (another run may have pushed meanwhile); only the data files change
-          git fetch -q origin main
-          git reset -q origin/main
-          git add cup-data.json drafts-data.json trades-data.json
-          if git diff --cached --quiet; then
-            echo "No changes"
-            exit 0
-          fi
-          git commit -m "Update data $(date -u +'%Y-%m-%d %H:%M UTC')"
-          git push
+      # the night wait ran out of time — start a follow-up run that carries on (not dependent on GitHub's schedule)
+      - name: Start a follow-up run
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' && hashFiles('continue.flag') != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run cup-sync.yml --ref main --repo "$GITHUB_REPOSITORY"

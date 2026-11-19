@@ -529,6 +529,9 @@ def main():
     with open(OUT_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
     print(f"\nDone: {ok}/{len(LEAGUES)} leagues OK" + (f", failed: {', '.join(failed)}" if failed else ""))
+    if live_mode:   # tell sync_loop.py that games were live (stats hidden) — it will try again later
+        open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_mode.flag"), "w").close()
+        print("Games were live — matchup stats were hidden, previous numbers kept.")
     # fail the run only if nothing worked at all (e.g. Yahoo blocked us)
     sys.exit(0 if ok else 1)
 
