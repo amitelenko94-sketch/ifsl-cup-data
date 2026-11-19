@@ -19,6 +19,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAX_SECONDS = int(5.6 * 3600)  # stay under the job's timeout (6 h) — then a follow-up run continues
 PAUSE = 20 * 60                # between passes while games are still live
+EVENING_UTC = 15               # 17:00 Israel: a run from now on doesn't stop — it carries on through the night
 NIGHT_START_UTC = 23           # 01:00 Israel (winter) — NBA games run from about now…
 DAY_FINAL_UTC = (6, 5)         # …and the night is final at 06:00 UTC (08:00 Israel); collect a bit after
 LIVE_FLAG = os.path.join(HERE, "live_mode.flag")
@@ -74,19 +75,35 @@ def sleep_or_hand_over(seconds, why):
     time.sleep(seconds)
 
 
-def main():
-    now = datetime.datetime.now(datetime.timezone.utc)
-    if now.hour >= NIGHT_START_UTC or now.hour < DAY_FINAL_UTC[0]:
-        # night: games are live or still to come — collect once they're over and the day is final
-        target = now.replace(hour=DAY_FINAL_UTC[0], minute=DAY_FINAL_UTC[1], second=0, microsecond=0)
-        if target <= now:
-            target += datetime.timedelta(days=1)
-        sleep_or_hand_over((target - now).total_seconds(), "Night games")
+def collect():
     live = run_pass()
-    while live:   # late games still on — try again in a bit
+    while live:   # games still on — try again in a bit
         sleep_or_hand_over(PAUSE, "Games still live")
         live = run_pass()
-    print("Data complete.", flush=True)
+
+
+def wait_for_morning(why):
+    """Sleep (handing over to follow-up runs as needed) until the night's games are final."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    target = now.replace(hour=DAY_FINAL_UTC[0], minute=DAY_FINAL_UTC[1], second=0, microsecond=0)
+    if target <= now:
+        target += datetime.timedelta(days=1)
+    sleep_or_hand_over((target - now).total_seconds(), why)
+
+
+def main():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    night = now.hour >= NIGHT_START_UTC or now.hour < DAY_FINAL_UTC[0]
+    if not night:
+        collect()                       # daytime / evening: collect now
+        if now.hour < EVENING_UTC:
+            print("Data complete.", flush=True)
+            return
+        # evening: don't stop — stay on (via follow-up runs) so the morning collection never depends on
+        # GitHub firing a scheduled run during the night
+    wait_for_morning("Waiting for the night's games to end")
+    collect()
+    print("Data complete — the night's games are in.", flush=True)
 
 
 if __name__ == "__main__":

@@ -25,15 +25,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Scheduled runs only: skip when the data is still fresh (updated < 75 min ago). This is about the AGE of the
-      # data, never about the clock time — a late/delayed run always goes ahead once the data is old.
+      # Scheduled runs only, and only in the daytime (06:00–15:00 UTC): skip when the data is still fresh (updated
+      # < 75 min ago). Evening/night runs never skip — they keep the overnight chain going (see sync_loop.py).
+      # A skip can only REDUCE duplicate daytime runs; a late/delayed run always goes ahead once the data is old.
       - name: Fresh enough?
         id: gate
         run: |
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
           import datetime, json, os
           run = "true"
-          if os.environ.get("GITHUB_EVENT_NAME") == "schedule":
+          hour = datetime.datetime.now(datetime.timezone.utc).hour
+          if os.environ.get("GITHUB_EVENT_NAME") == "schedule" and 6 <= hour < 15:
               try:
                   upd = json.load(open("cup-data.json"))["updated"]
                   age = datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.strptime(upd, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
