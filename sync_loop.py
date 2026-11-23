@@ -27,7 +27,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 IL = ZoneInfo("Asia/Jerusalem")
 MAX_SECONDS = int(5.6 * 3600)                    # stay under the job's timeout (6 h) — then a follow-up run continues
 PAUSE = 20 * 60                                  # between collections while games are still live
-MORNING = [(8, 5), (9, 5), (10, 5), (11, 5)]     # fixed morning collections (Israel time)
+# fixed collections (Israel time): every morning hour after the night's games, plus 13:05 and 16:05 because Yahoo
+# sometimes finishes its weekly totals hours later (2026-11-23: Sunday's games were missing from 11:00 until ~15:00)
+MORNING = [(8, 5), (9, 5), (10, 5), (11, 5), (13, 5), (16, 5)]
 EVENING_HOUR = 17                                # from 17:00 a run stays on until the morning collections are done
 LIVE_FLAG = os.path.join(HERE, "live_mode.flag")
 CONTINUE_FLAG = os.path.join(HERE, "continue.flag")

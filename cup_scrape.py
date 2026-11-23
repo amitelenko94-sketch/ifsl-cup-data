@@ -300,12 +300,22 @@ def read_matchup(lid, week, tid):
             time.sleep(5 * (attempt + 1))
 
 
+def went_backwards(old, new):
+    """True if Yahoo's weekly totals for a team are clearly LOWER than what we already saved.
+    Counting stats only grow during a week; official stat corrections move them by a point or two."""
+    for k in ("fga", "fta", "pts", "reb", "ast"):
+        o, n = old.get(k), new.get(k)
+        if o is not None and n is not None and n < o - max(3, o * 0.02):
+            return True
+    return False
+
+
 def scrape_week(lid, week, team_ids, prev_week):
     """Weekly totals for every team in the league for one week (one page per matchup).
     A matchup that can't be read keeps its numbers from the previous run instead of
     failing the whole league; those teams are listed under "stale"."""
     prev_week = prev_week or {}
-    out, start, end, stale = {}, prev_week.get("start"), prev_week.get("end"), []
+    out, start, end, stale, held = {}, prev_week.get("start"), prev_week.get("end"), [], []
     for tid in sorted(team_ids, key=int):
         if tid in out or tid in stale:
             continue  # already covered by its opponent's matchup page
@@ -322,13 +332,28 @@ def scrape_week(lid, week, team_ids, prev_week):
                     out[t] = old[t]
                 stale.append(t)
             break
-        out.update(rows)
+        old = prev_week.get("teams", {})
+        for t, rec in rows.items():
+            if t in old and went_backwards(old[t], rec):
+                # Yahoo served LOWER weekly totals than we already have (seen on 2026-11-23 while it closed the
+                # week: Saturday+Sunday games vanished for a few hours). Weekly totals only grow, so keep ours.
+                print(f"     week {week} team {t}: Yahoo shows lower totals than saved "
+                      f"(pts {old[t].get('pts')} → {rec.get('pts')}) — keeping the saved numbers", file=sys.stderr)
+                kept = dict(old[t])
+                if "_roster" in rec:
+                    kept["_roster"] = rec["_roster"]
+                out[t] = kept
+                held.append(t)
+            else:
+                out[t] = rec
         start, end = s or start, e or end
     # rosters travel separately (main keeps only the latest per league, not one copy per week)
     rosters = {tid: rec.pop("_roster") for tid, rec in out.items() if "_roster" in rec}
     week_data = {"start": start, "end": end, "teams": out}
     if stale:
         week_data["stale"] = stale
+    if held:
+        week_data["held"] = held
     if rosters:
         week_data["rosters"] = rosters
     return week_data
