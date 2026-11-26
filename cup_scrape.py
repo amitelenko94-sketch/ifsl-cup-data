@@ -442,8 +442,9 @@ def update_schedule(data):
         except Exception as e:
             print(f"     schedule week {w}: {e}", file=sys.stderr)
             break
-        if not dates:
-            break   # past the end of Yahoo's season
+        prev = sched.get(str(w - 1))
+        if not dates or (prev and dates[0] <= prev[1]):
+            break   # past the end of Yahoo's season (Yahoo shows the last week again for higher numbers)
         sched[str(w)] = [dates[0], dates[-1]]
     print("Schedule: " + ", ".join(f"{w}:{d[0][5:]}..{d[1][5:]}" for w, d in sorted(sched.items(), key=lambda x: int(x[0]))))
 
