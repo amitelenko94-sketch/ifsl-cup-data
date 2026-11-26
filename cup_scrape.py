@@ -425,6 +425,29 @@ def day_is_final(date, now):
     return now >= datetime.datetime(nxt.year, nxt.month, nxt.day, DAY_FINAL_HOUR_UTC, tzinfo=datetime.timezone.utc)
 
 
+SCHEDULE_LEAGUE = "3109"   # any league — all IFSL leagues share Yahoo's matchup calendar
+DATE_LINK = re.compile(r"matchup\?week=\d+&(?:amp;)?(?:mid1=\d+&(?:amp;)?mid2=\d+&(?:amp;)?)?date=(\d{4}-\d{2}-\d{2})")
+
+
+def update_schedule(data):
+    """Yahoo's matchup calendar: data["schedule"][week] = [first day, last day]. Weeks are not always 7 days
+    (e.g. week 7 of 2026-27 = 14 days around the NBA Cup), so the site takes the dates from here instead of
+    counting 7 days per week. Read once per week number and kept."""
+    sched = data.setdefault("schedule", {})
+    for w in range(1, 27):
+        if str(w) in sched:
+            continue
+        try:
+            dates = sorted(set(DATE_LINK.findall(fetch(f"{BASE}{SCHEDULE_LEAGUE}/matchup?week={w}&mid1=1"))))
+        except Exception as e:
+            print(f"     schedule week {w}: {e}", file=sys.stderr)
+            break
+        if not dates:
+            break   # past the end of Yahoo's season
+        sched[str(w)] = [dates[0], dates[-1]]
+    print("Schedule: " + ", ".join(f"{w}:{d[0][5:]}..{d[1][5:]}" for w, d in sorted(sched.items(), key=lambda x: int(x[0]))))
+
+
 def update_real_games(data):
     """Fill league["daily"][date][team] = players who really played, for finished days of this week
     and last week (each day is read once), then sum them into each week's teams as gp_real."""
@@ -549,6 +572,11 @@ def main():
         update_real_games(data)
     except Exception as e:  # never lose the weekly stats because of the games count
         print(f"Real games step failed: {e}", file=sys.stderr)
+
+    try:
+        update_schedule(data)
+    except Exception as e:  # dates for the site only — never fail the run over them
+        print(f"Schedule step failed: {e}", file=sys.stderr)
 
     data["updated"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     with open(OUT_FILE, "w", encoding="utf-8") as f:
